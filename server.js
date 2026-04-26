@@ -44,6 +44,9 @@ const browserClients = new Map();
 // deviceIds that already had their G sequence started this session
 const sessionStarted = new Set();
 
+// deviceId → interval handle for the G command loop
+const streamIntervals = new Map();
+
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
 function sendCommand(deviceId, cmd) {
@@ -66,11 +69,10 @@ function tryStartSession(deviceId) {
   if (!udpEndpoints.has(deviceId))      return;
 
   sessionStarted.add(deviceId);
-  logTcp(`Session ready for ${deviceId} — sending 5 G commands`);
+  logTcp(`Session ready for ${deviceId} — streaming at 1 fps`);
 
-  for (let i = 0; i < 5; i++) {
-    setTimeout(() => sendCommand(deviceId, 'G'), i * 1000);
-  }
+  const interval = setInterval(() => sendCommand(deviceId, 'G'), 1000);
+  streamIntervals.set(deviceId, interval);
 }
 
 function broadcastFrame(deviceId, jpeg) {
@@ -149,7 +151,6 @@ const tcpServer = net.createServer((socket) => {
         else     logTcp(`Frame from ${deviceId} → ${filename} (${jpeg.length} bytes)`);
       });
 
-      // Push frame to any subscribed browser clients
       broadcastFrame(deviceId, jpeg);
 
       const leftover = writeIndex - (4 + expectedSize);
@@ -167,6 +168,8 @@ const tcpServer = net.createServer((socket) => {
     logTcp(`Disconnected: ${deviceId}`);
     tcpConnections.delete(deviceId);
     sessionStarted.delete(deviceId);
+    clearInterval(streamIntervals.get(deviceId));
+    streamIntervals.delete(deviceId);
   });
 
   socket.on('error', (err) => logTcp(`Error from ${deviceId}: ${err.message}`));
