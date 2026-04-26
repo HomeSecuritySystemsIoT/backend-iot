@@ -57,7 +57,6 @@ function sendCommand(deviceId, cmd) {
   }
   socket.write(Buffer.from(cmd), (err) => {
     if (err) logTcp(`Failed to send '${cmd}' to ${deviceId}: ${err.message}`);
-    else     logTcp(`Sent '${cmd}' → ${deviceId}`);
   });
 }
 
@@ -66,7 +65,7 @@ function tryStartSession(deviceId) {
   if (!tcpConnections.has(deviceId)) return;
 
   sessionStarted.add(deviceId);
-  logTcp(`Session ready for ${deviceId} — streaming at 1 fps`);
+  logTcp(`Session ready for ${deviceId} — streaming at 1 fps, starting sending command 'G'`);
 
   const interval = setInterval(() => sendCommand(deviceId, 'G'), 1000);
   streamIntervals.set(deviceId, interval);
