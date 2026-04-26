@@ -6,8 +6,33 @@ const path = require('path');
 const TCP_PORT = 7891;
 const UDP_PORT = 7892;
 const IMAGES_DIR = path.join(__dirname, 'images_received');
+const LOGS_DIR = path.join(__dirname, 'logs');
 
 fs.mkdirSync(IMAGES_DIR, { recursive: true });
+fs.mkdirSync(LOGS_DIR, { recursive: true });
+
+// ── LOGGER ──────────────────────────────────────────────────────────────────
+
+const tcpLog = fs.createWriteStream(path.join(LOGS_DIR, 'tcp.log'), { flags: 'a' });
+const udpLog = fs.createWriteStream(path.join(LOGS_DIR, 'udp.log'), { flags: 'a' });
+
+function timestamp() {
+  return new Date().toISOString();
+}
+
+function logTcp(msg) {
+  const line = `[${timestamp()}] ${msg}\n`;
+  process.stdout.write(`[TCP] ${msg}\n`);
+  tcpLog.write(line);
+}
+
+function logUdp(msg) {
+  const line = `[${timestamp()}] ${msg}\n`;
+  process.stdout.write(`[UDP] ${msg}\n`);
+  udpLog.write(line);
+}
+
+// ── UDP SERVER (motion detection + command channel) ─────────────────────────
 
 // deviceIp → { address, port } — populated when ESP32 first sends a UDP packet
 const udpEndpoints = new Map();
@@ -17,15 +42,31 @@ const udpServer = dgram.createSocket('udp4');
 function sendCommand(deviceIp, cmd) {
   const endpoint = udpEndpoints.get(deviceIp);
   if (!endpoint) {
-    console.warn(`[UDP] No endpoint known for ${deviceIp}, cannot send '${cmd}'`);
+    logUdp(`No endpoint known for ${deviceIp}, cannot send '${cmd}'`);
     return;
   }
   const msg = Buffer.from(cmd);
   udpServer.send(msg, endpoint.port, endpoint.address, (err) => {
-    if (err) console.error(`[UDP] Failed to send '${cmd}' to ${deviceIp}:`, err.message);
-    else console.log(`[UDP] Sent '${cmd}' → ${deviceIp}:${endpoint.port}`);
+    if (err) logUdp(`Failed to send '${cmd}' to ${deviceIp}: ${err.message}`);
+    else logUdp(`Sent '${cmd}' → ${deviceIp}:${endpoint.port}`);
   });
 }
+
+udpServer.on('message', (msg, rinfo) => {
+  if (!udpEndpoints.has(rinfo.address)) {
+    logUdp(`New endpoint registered: ${rinfo.address}:${rinfo.port}`);
+  }
+  udpEndpoints.set(rinfo.address, { address: rinfo.address, port: rinfo.port });
+
+  if (msg.length === 4) {
+    const motionDiff = msg.readUInt32BE(0);
+    logUdp(`Motion from ${rinfo.address} — diff: ${motionDiff}`);
+  }
+});
+
+udpServer.on('error', (err) => {
+  logUdp(`Server error: ${err.message}`);
+});
 
 // ── TCP SERVER (camera frames only) ────────────────────────────────────────
 
@@ -41,7 +82,7 @@ const tcpServer = net.createServer((socket) => {
   let expectedSize = -1;
   let frameCount = 0;
 
-  console.log(`[TCP] ESP32 connected: ${deviceIp}`);
+  logTcp(`Connected: ${deviceIp}`);
 
   // Send 5 'G' commands, one per second
   for (let i = 0; i < 5; i++) {
@@ -54,6 +95,7 @@ const tcpServer = net.createServer((socket) => {
       const grown = Buffer.alloc(stagingBuffer.length * 2);
       stagingBuffer.copy(grown);
       stagingBuffer = grown;
+      logTcp(`Buffer expanded for ${deviceIp}`);
     }
 
     chunk.copy(stagingBuffer, writeIndex);
@@ -73,8 +115,8 @@ const tcpServer = net.createServer((socket) => {
       const filepath = path.join(deviceDir, filename);
 
       fs.writeFile(filepath, jpeg, (err) => {
-        if (err) console.error(`[TCP] Failed to save frame from ${deviceIp}:`, err.message);
-        else console.log(`[TCP] ${deviceIp} → ${filename} (${jpeg.length} bytes)`);
+        if (err) logTcp(`Failed to save frame from ${deviceIp}: ${err.message}`);
+        else logTcp(`Frame from ${deviceIp} → ${filename} (${jpeg.length} bytes)`);
       });
 
       // Shift leftover data to front of buffer
@@ -89,30 +131,11 @@ const tcpServer = net.createServer((socket) => {
     }
   });
 
-  socket.on('close', () => console.log(`[TCP] ESP32 disconnected: ${deviceIp}`));
-  socket.on('error', (err) => console.error(`[TCP] Error from ${deviceIp}:`, err.message));
-});
-
-// ── UDP SERVER (motion detection + command channel) ─────────────────────────
-
-udpServer.on('message', (msg, rinfo) => {
-  // Register or refresh the ESP32's UDP endpoint
-  if (!udpEndpoints.has(rinfo.address)) {
-    console.log(`[UDP] Registered endpoint: ${rinfo.address}:${rinfo.port}`);
-  }
-  udpEndpoints.set(rinfo.address, { address: rinfo.address, port: rinfo.port });
-
-  if (msg.length === 4) {
-    const motionDiff = msg.readUInt32BE(0);
-    console.log(`[UDP] Motion from ${rinfo.address} — diff: ${motionDiff}`);
-  }
-});
-
-udpServer.on('error', (err) => {
-  console.error('[UDP] Server error:', err.message);
+  socket.on('close', () => logTcp(`Disconnected: ${deviceIp}`));
+  socket.on('error', (err) => logTcp(`Error from ${deviceIp}: ${err.message}`));
 });
 
 // ── START ───────────────────────────────────────────────────────────────────
 
-tcpServer.listen(TCP_PORT, () => console.log(`[TCP] Listening on :${TCP_PORT}`));
-udpServer.bind(UDP_PORT, () => console.log(`[UDP] Listening on :${UDP_PORT}`));
+tcpServer.listen(TCP_PORT, () => logTcp(`Listening on :${TCP_PORT}`));
+udpServer.bind(UDP_PORT, () => logUdp(`Listening on :${UDP_PORT}`));
