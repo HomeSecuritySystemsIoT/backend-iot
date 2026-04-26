@@ -50,23 +50,20 @@ const streamIntervals = new Map();
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
 function sendCommand(deviceId, cmd) {
-  const endpoint = udpEndpoints.get(deviceId);
-  if (!endpoint) {
-    logUdp(`No UDP endpoint for ${deviceId}, cannot send '${cmd}'`);
+  const socket = tcpConnections.get(deviceId);
+  if (!socket?.writable) {
+    logTcp(`No TCP connection for ${deviceId}, cannot send '${cmd}'`);
     return;
   }
-  const msg = Buffer.from(cmd);
-  udpServer.send(msg, endpoint.port, endpoint.address, (err) => {
-    if (err) logUdp(`Failed to send '${cmd}' to ${deviceId}: ${err.message}`);
-    else     logUdp(`Sent '${cmd}' → ${deviceId}:${endpoint.port}`);
+  socket.write(Buffer.from(cmd), (err) => {
+    if (err) logTcp(`Failed to send '${cmd}' to ${deviceId}: ${err.message}`);
+    else     logTcp(`Sent '${cmd}' → ${deviceId}`);
   });
 }
 
-// Only fires the G sequence once both TCP and UDP are up for a device
 function tryStartSession(deviceId) {
-  if (sessionStarted.has(deviceId))     return;
-  if (!tcpConnections.has(deviceId))    return;
-  if (!udpEndpoints.has(deviceId))      return;
+  if (sessionStarted.has(deviceId))  return;
+  if (!tcpConnections.has(deviceId)) return;
 
   sessionStarted.add(deviceId);
   logTcp(`Session ready for ${deviceId} — streaming at 1 fps`);
@@ -99,9 +96,6 @@ udpServer.on('message', (msg, rinfo) => {
     const motionDiff = msg.readUInt32BE(0);
     logUdp(`Motion from ${deviceId} — diff: ${motionDiff}`);
   }
-
-  // UDP came in — check if TCP is already up and session hasn't started yet
-  tryStartSession(deviceId);
 });
 
 udpServer.on('error', (err) => logUdp(`Server error: ${err.message}`));
