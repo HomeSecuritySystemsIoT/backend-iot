@@ -131,14 +131,14 @@ const tcpServer = net.createServer((socket) => {
     writeIndex += chunk.length;
 
     if (expectedSize === -1 && writeIndex >= 4) {
-      expectedSize = stagingBuffer.readUInt32BE(0);
+      expectedSize = stagingBuffer.readUInt32LE(0);
     }
 
     if (expectedSize !== -1 && writeIndex >= expectedSize + 4) {
       const jpeg = Buffer.from(stagingBuffer.subarray(4, 4 + expectedSize));
       frameCount++;
 
-      const filename = `${Date.now()}_${frameCount}.jpg`;
+      const filename = `photo_sent.jpg`;
       fs.writeFile(path.join(deviceDir, filename), jpeg, (err) => {
         if (err) logTcp(`Failed to save frame from ${deviceId}: ${err.message}`);
         else     logTcp(`Frame from ${deviceId} → ${filename} (${jpeg.length} bytes)`);
