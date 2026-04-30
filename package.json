@@ -5,6 +5,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "sharp": "^0.34.5",
     "ws": "^8.20.0"
   }
 }
