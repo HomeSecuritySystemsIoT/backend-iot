@@ -182,6 +182,19 @@ const tcpServer = net.createServer((socket) => {
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
+  // GET /devices — localhost-only, returns connected device IDs
+  if (url.pathname === '/devices') {
+    const remoteIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') ?? '';
+    if (remoteIp !== '127.0.0.1' && remoteIp !== '::1') {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ devices: [...tcpConnections.keys()] }));
+    return;
+  }
+
   if (url.pathname !== '/motion') {
     res.writeHead(404);
     res.end();
