@@ -195,11 +195,11 @@ const httpServer = http.createServer((req, res) => {
   // GET /devices — localhost-only, returns connected device IDs
   if (url.pathname === '/devices') {
     const remoteIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') ?? '';
-    if (remoteIp !== '127.0.0.1' && remoteIp !== '::1') {
-      res.writeHead(403);
-      res.end('Forbidden');
-      return;
-    }
+    // if (remoteIp !== '127.0.0.1' && remoteIp !== '::1') {
+    //   res.writeHead(403);
+    //   res.end('Forbidden');
+    //   return;
+    // }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ devices: [...tcpConnections.keys()] }));
     return;
