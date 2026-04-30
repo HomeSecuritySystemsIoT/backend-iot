@@ -35,7 +35,10 @@ function sendCommand(deviceId, cmd) {
   const socket = tcpConnections.get(deviceId);
   if (!socket?.writable) return;
   socket.write(Buffer.from(cmd), (err) => {
-    if (err) logTcp(`Failed to send '${cmd}' to ${deviceId}: ${err.message}`);
+    if (err) {
+      logTcp(`Failed to send '${cmd}' to ${deviceId}: ${err.message} — destroying socket`);
+      socket.destroy();
+    }
   });
 }
 
@@ -46,13 +49,18 @@ function videoWatcherCount(deviceId) {
 // Switches between G-stream (any subscriber present) and P-keepalive (none).
 // Both video watchers and motion SSE subscribers trigger streaming.
 function updateDeviceMode(deviceId) {
-  if (!tcpConnections.has(deviceId)) return;
+  const hasTcp = tcpConnections.has(deviceId);
+  logTcp(`updateDeviceMode(${deviceId}) — tcp=${hasTcp} videoWatchers=${videoWatcherCount(deviceId)} motionWatchers=${motion.watcherCount(deviceId)}`);
+  if (!hasTcp) return;
 
   clearInterval(streamIntervals.get(deviceId));
 
   if (videoWatcherCount(deviceId) + motion.watcherCount(deviceId) > 0) {
     logTcp(`${deviceId} — client(s) active, streaming at 1 fps`);
-    streamIntervals.set(deviceId, setInterval(() => sendCommand(deviceId, 'G'), 1000));
+    streamIntervals.set(deviceId, setInterval(() => {
+      logTcp(`${deviceId} — sending G`);
+      sendCommand(deviceId, 'G');
+    }, 1000));
   } else {
     logTcp(`${deviceId} — no clients, sending keepalive 'P'`);
     streamIntervals.set(deviceId, setInterval(() => sendCommand(deviceId, 'P'), 5000));
@@ -61,6 +69,7 @@ function updateDeviceMode(deviceId) {
 
 function broadcastFrame(deviceId, jpeg) {
   const clients = browserClients.get(deviceId);
+  logTcp(`broadcastFrame(${deviceId}) — ${jpeg.length} bytes — ${clients?.size ?? 0} ws client(s)`);
   if (!clients?.size) return;
   for (const ws of clients) {
     if (ws.readyState === 1) ws.send(jpeg);
@@ -90,6 +99,7 @@ function parseDeviceId(chunk, newlineIndex) {
 // ── TCP SERVER ───────────────────────────────────────────────────────────────
 
 const tcpServer = net.createServer((socket) => {
+  socket.setKeepAlive(true, 5000); // detect dead connections after ~5 s of silence
   const remoteIp = socket.remoteAddress.replace(/^::ffff:/, '');
   let deviceId   = remoteIp;
   let phase      = 'identify'; // 'identify' | 'stream'
