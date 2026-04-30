@@ -6,7 +6,7 @@ COPY package.json ./
 RUN npm ci --omit=dev
 
 COPY server.js ./
-COPY motion-detection ./
+COPY motion-detection.js ./
 
 EXPOSE 7890
 EXPOSE 7891
