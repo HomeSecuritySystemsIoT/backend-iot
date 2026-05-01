@@ -12,7 +12,7 @@ Standalone Node.js server that accepts connections from ESP32-S3 camera nodes.
 ## How it works
 
 ### TCP (frames only)
-The ESP32 connects as a TCP client and only sends data — raw JPEG frames prefixed with a 4-byte big-endian size header. The server reassembles and saves each frame.
+The ESP32 connects as a TCP client and only sends data — raw JPEG frames prefixed with a 4-byte little-endian size header. The server reassembles and saves each frame.
 
 ```
 ESP32 → Server : [4 bytes: size][size bytes: JPEG]
