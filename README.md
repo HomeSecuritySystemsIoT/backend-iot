@@ -1,6 +1,6 @@
 # IoT Backend Service
 
-Standalone Node.js server that accepts connections from ESP32-S3 camera nodes. No dependencies — runs with plain Node.js.
+Standalone Node.js server that accepts connections from ESP32-S3 camera nodes. 
 
 ## Ports
 
