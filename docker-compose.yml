@@ -6,6 +6,8 @@ services:
       - "7890:7890"
       - "7891:7891"
       - "7892:7892/udp"
+      - "7893:7893"
     volumes:
       - ./images_received:/app/images_received
       - ./logs:/app/logs
+      - ./certs:/app/certs:ro
