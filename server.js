@@ -1,14 +1,20 @@
-const net  = require('net');
-const fs   = require('fs');
-const http = require('http');
-const path = require('path');
+const net   = require('net');
+const tls   = require('tls');
+const fs    = require('fs');
+const http  = require('http');
+const path  = require('path');
 const { WebSocketServer } = require('ws');
 const motion = require('./motion-detection');
 
 const TCP_PORT            = 7891;
+const TCP_TLS_PORT        = 7893;
 const WS_PORT             = 7890;
 const LOGS_DIR            = path.join(__dirname, 'logs');
 const IDENTIFY_TIMEOUT_MS = 2000;
+
+const TLS_KEY_PATH  = process.env.TLS_KEY_PATH  || path.join(__dirname, 'certs', 'server.key');
+const TLS_CERT_PATH = process.env.TLS_CERT_PATH || path.join(__dirname, 'certs', 'server.crt');
+const TLS_CA_PATH   = process.env.TLS_CA_PATH   || path.join(__dirname, 'certs', 'ca.crt');
 
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 
@@ -96,9 +102,9 @@ function parseDeviceId(chunk, newlineIndex) {
   return id.length > 0 ? id : null;
 }
 
-// ── TCP SERVER ───────────────────────────────────────────────────────────────
+// ── DEVICE CONNECTION HANDLER (shared by plain TCP and TLS TCP) ──────────────
 
-const tcpServer = net.createServer((socket) => {
+function handleDeviceConnection(socket) {
   socket.setKeepAlive(true, 5000); // detect dead connections after ~5 s of silence
   const remoteIp = socket.remoteAddress.replace(/^::ffff:/, '');
   let deviceId   = remoteIp;
@@ -180,7 +186,11 @@ const tcpServer = net.createServer((socket) => {
   });
 
   socket.on('error', (err) => logTcp(`Error from ${deviceId}: ${err.message}`));
-});
+}
+
+// ── TCP SERVER ───────────────────────────────────────────────────────────────
+
+const tcpServer = net.createServer(handleDeviceConnection);
 
 // ── HTTP + SSE SERVER (shares port with WebSocket) ───────────────────────────
 //
@@ -262,6 +272,37 @@ wss.on('connection', (ws, req) => {
     updateDeviceMode(deviceId);
   });
 });
+
+// ── TLS TCP SERVER ───────────────────────────────────────────────────────────
+//
+// Mirrors the plain TCP server on port 7891 but with TLS encryption.
+// Place your certificate at certs/server.crt and key at certs/server.key,
+// or override via TLS_KEY_PATH / TLS_CERT_PATH environment variables.
+// If the files are missing the TLS server is skipped; the plain server on
+// port 7891 remains fully operational.
+
+function loadTlsOptions() {
+  try {
+    return {
+      key:                fs.readFileSync(TLS_KEY_PATH),
+      cert:               fs.readFileSync(TLS_CERT_PATH),
+      ca:                 fs.readFileSync(TLS_CA_PATH),
+      requestCert:        true,  // ask the ESP32 for its client certificate
+      rejectUnauthorized: true,  // reject any device not signed by our CA
+    };
+  } catch {
+    return null;
+  }
+}
+
+const tlsOptions = loadTlsOptions();
+
+if (tlsOptions) {
+  const tlsTcpServer = tls.createServer(tlsOptions, handleDeviceConnection);
+  tlsTcpServer.listen(TCP_TLS_PORT, () => logTcp(`TLS listening on :${TCP_TLS_PORT}`));
+} else {
+  process.stdout.write(`[TLS] Certs not found at ${TLS_KEY_PATH} / ${TLS_CERT_PATH} — TLS server disabled\n`);
+}
 
 // ── START ────────────────────────────────────────────────────────────────────
 
