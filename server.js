@@ -26,7 +26,7 @@ function ts() { return new Date().toISOString(); }
 
 function logTcp(msg) {
   process.stdout.write(`[TCP] ${msg}\n`);
-  tcpLog.write(`[${ts()}] ${msg}\n`);
+  // tcpLog.write(`[${ts()}] ${msg}\n`);
 }
 
 // ── STATE ────────────────────────────────────────────────────────────────────
