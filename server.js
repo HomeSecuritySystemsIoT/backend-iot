@@ -1,21 +1,22 @@
-const net   = require('net');
-const tls   = require('tls');
-const fs    = require('fs');
-const http  = require('http');
-const path  = require('path');
+const net = require('net');
+const tls = require('tls');
+const fs = require('fs');
+const http = require('http');
+const path = require('path');
 const { WebSocketServer } = require('ws');
 const motion = require('./motion-detection');
 
-const TCP_PORT            = 7891;
-const TCP_TLS_PORT        = 7893;
-const WS_PORT             = 7890;
-const LOGS_DIR            = path.join(__dirname, 'logs');
-const IDENTIFY_TIMEOUT_MS = 2000;
-const ONE_SECOND = 1000;
+const TCP_PORT = 7891;
+const TCP_TLS_PORT = 7893;
+const WS_PORT = 7890;
+const LOGS_DIR = path.join(__dirname, 'logs');
+const ONE_SECOND_MS = 1000;
+const IDENTIFY_TIMEOUT_MS = 2 * ONE_SECOND_MS;
+const DEVICE_TIMEOUT_MS = 15 * ONE_SECOND_MS; // destroy socket after 15 s with no data from device
 
-const TLS_KEY_PATH  = process.env.TLS_KEY_PATH  || path.join(__dirname, 'certs', 'server.key');
+const TLS_KEY_PATH = process.env.TLS_KEY_PATH || path.join(__dirname, 'certs', 'server.key');
 const TLS_CERT_PATH = process.env.TLS_CERT_PATH || path.join(__dirname, 'certs', 'server.crt');
-const TLS_CA_PATH   = process.env.TLS_CA_PATH   || path.join(__dirname, 'certs', 'ca.crt');
+const TLS_CA_PATH = process.env.TLS_CA_PATH || path.join(__dirname, 'certs', 'ca.crt');
 
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 
@@ -32,9 +33,11 @@ function logTcp(msg) {
 
 // ── STATE ────────────────────────────────────────────────────────────────────
 
-const tcpConnections  = new Map();  // deviceId → TCP socket
-const browserClients  = new Map();  // deviceId → Set<WebSocket>  (video feed)
+const tcpConnections = new Map();  // deviceId → TCP socket
+const browserClients = new Map();  // deviceId → Set<WebSocket>  (video feed)
 const streamIntervals = new Map();  // deviceId → interval handle
+const deviceWatchdogs = new Map();  // deviceId → watchdog interval handle
+const deviceLastSeen = new Map();  // deviceId → Date.now() of last received byte
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -69,11 +72,11 @@ function updateDeviceMode(deviceId) {
     streamIntervals.set(deviceId, setInterval(() => {
       logTcp(`${deviceId} — sending G`);
       sendCommand(deviceId, 'G');
-    }, ONE_SECOND / 2));
+    }, ONE_SECOND_MS / 2));
 
   } else {
     logTcp(`${deviceId} — no clients, sending keepalive 'P'`);
-    streamIntervals.set(deviceId, setInterval(() => sendCommand(deviceId, 'P'), 5000));
+    streamIntervals.set(deviceId, setInterval(() => sendCommand(deviceId, 'P'), 5 * ONE_SECOND_MS));
   }
 }
 
@@ -109,14 +112,14 @@ function parseDeviceId(chunk, newlineIndex) {
 // ── DEVICE CONNECTION HANDLER (shared by plain TCP and TLS TCP) ──────────────
 
 function handleDeviceConnection(socket) {
-  socket.setKeepAlive(true, 5000); // detect dead connections after ~5 s of silence
+  socket.setKeepAlive(true, 5 * ONE_SECOND_MS); // detect dead connections after ~5 s of silence
   const remoteIp = socket.remoteAddress.replace(/^::ffff:/, '');
-  let deviceId   = remoteIp;
-  let phase      = 'identify'; // 'identify' | 'stream'
+  let deviceId = remoteIp;
+  let phase = 'identify'; // 'identify' | 'stream'
 
   let stagingBuffer = Buffer.alloc(5 * 1024 * 1024);
-  let writeIndex    = 0;
-  let expectedSize  = -1;
+  let writeIndex = 0;
+  let expectedSize = -1;
 
   function finalizeDevice(resolvedId) {
     if (phase !== 'identify') return;
@@ -127,6 +130,16 @@ function handleDeviceConnection(socket) {
     deviceId = resolvedId;
 
     tcpConnections.set(deviceId, socket);
+    deviceLastSeen.set(deviceId, Date.now());
+
+    const watchdog = setInterval(() => {
+      if (Date.now() - deviceLastSeen.get(deviceId) > DEVICE_TIMEOUT_MS) {
+        logTcp(`${deviceId} — no data for ${DEVICE_TIMEOUT_MS / 1000}s, assuming disconnected`);
+        socket.destroy();
+      }
+    }, 5 * ONE_SECOND_MS);
+    deviceWatchdogs.set(deviceId, watchdog);
+
     logTcp(`Connected: ${deviceId}`);
     updateDeviceMode(deviceId);
   }
@@ -135,6 +148,8 @@ function handleDeviceConnection(socket) {
   let identifyTimeout = setTimeout(() => finalizeDevice(remoteIp), IDENTIFY_TIMEOUT_MS);
 
   socket.on('data', (chunk) => {
+    deviceLastSeen.set(deviceId, Date.now());
+
     if (phase === 'identify') {
       const nl = chunk.indexOf(0x0A);
       if (nl !== -1) {
@@ -165,7 +180,7 @@ function handleDeviceConnection(socket) {
       broadcastFrame(deviceId, jpeg);
       motion.onFrame(deviceId, jpeg)
         .then(changed => { if (changed) logTcp(`Motion on ${deviceId}: ${(changed * 100).toFixed(1)}%`); })
-        .catch(err   => logTcp(`Motion check error for ${deviceId}: ${err.message}`));
+        .catch(err => logTcp(`Motion check error for ${deviceId}: ${err.message}`));
 
       const leftover = writeIndex - (4 + expectedSize);
       if (leftover > 0) {
@@ -180,6 +195,9 @@ function handleDeviceConnection(socket) {
 
   socket.on('close', () => {
     clearTimeout(identifyTimeout);
+    clearInterval(deviceWatchdogs.get(deviceId));
+    deviceWatchdogs.delete(deviceId);
+    deviceLastSeen.delete(deviceId);
     if (tcpConnections.get(deviceId) === socket) {
       logTcp(`Disconnected: ${deviceId}`);
       tcpConnections.delete(deviceId);
@@ -233,9 +251,9 @@ const httpServer = http.createServer((req, res) => {
   }
 
   res.writeHead(200, {
-    'Content-Type':                'text/event-stream',
-    'Cache-Control':               'no-cache',
-    'Connection':                  'keep-alive',
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
   });
   res.write('\n'); // flush headers immediately so the browser opens the stream
@@ -255,7 +273,7 @@ const httpServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws, req) => {
-  const url      = new URL(req.url, 'http://localhost');
+  const url = new URL(req.url, 'http://localhost');
   const deviceId = url.searchParams.get('device');
 
   if (!deviceId) {
@@ -288,10 +306,10 @@ wss.on('connection', (ws, req) => {
 function loadTlsOptions() {
   try {
     return {
-      key:                fs.readFileSync(TLS_KEY_PATH),
-      cert:               fs.readFileSync(TLS_CERT_PATH),
-      ca:                 fs.readFileSync(TLS_CA_PATH),
-      requestCert:        true,  // ask the ESP32 for its client certificate
+      key: fs.readFileSync(TLS_KEY_PATH),
+      cert: fs.readFileSync(TLS_CERT_PATH),
+      ca: fs.readFileSync(TLS_CA_PATH),
+      requestCert: true,  // ask the ESP32 for its client certificate
       rejectUnauthorized: true,  // reject any device not signed by our CA
     };
   } catch {
