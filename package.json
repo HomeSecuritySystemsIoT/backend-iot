@@ -2,7 +2,8 @@
   "name": "iot-backend",
   "version": "1.0.0",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "docker-rebuild": "docker compose down && git pull && docker compose up -d --build && clear && docker compose logs -f"
   },
   "dependencies": {
     "sharp": "^0.34.5",
