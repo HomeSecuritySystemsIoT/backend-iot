@@ -11,6 +11,7 @@ const TCP_TLS_PORT        = 7893;
 const WS_PORT             = 7890;
 const LOGS_DIR            = path.join(__dirname, 'logs');
 const IDENTIFY_TIMEOUT_MS = 2000;
+const ONE_SECOND = 1000;
 
 const TLS_KEY_PATH  = process.env.TLS_KEY_PATH  || path.join(__dirname, 'certs', 'server.key');
 const TLS_CERT_PATH = process.env.TLS_CERT_PATH || path.join(__dirname, 'certs', 'server.crt');
@@ -63,10 +64,13 @@ function updateDeviceMode(deviceId) {
 
   if (videoWatcherCount(deviceId) + motion.watcherCount(deviceId) > 0) {
     logTcp(`${deviceId} — client(s) active, streaming at 1 fps`);
+
+    // 2 fps
     streamIntervals.set(deviceId, setInterval(() => {
       logTcp(`${deviceId} — sending G`);
       sendCommand(deviceId, 'G');
-    }, 1000));
+    }, ONE_SECOND / 2));
+
   } else {
     logTcp(`${deviceId} — no clients, sending keepalive 'P'`);
     streamIntervals.set(deviceId, setInterval(() => sendCommand(deviceId, 'P'), 5000));
