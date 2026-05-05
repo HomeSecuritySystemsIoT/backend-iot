@@ -88,11 +88,11 @@ function updateDeviceMode(deviceId) {
   if (videoWatcherCount(deviceId) + motion.watcherCount(deviceId) > 0) {
     logTcp(`${deviceId} — client(s) active, streaming at 1 fps`);
 
-    // 2 fps
+    // 1 fps
     streamIntervals.set(deviceId, setInterval(() => {
       logTcp(`${deviceId} — sending G`);
       sendCommand(deviceId, 'G');
-    }, ONE_SECOND_MS / 2));
+    }, ONE_SECOND_MS));
 
   } else {
     logTcp(`${deviceId} — no clients, sending keepalive 'P'`);
