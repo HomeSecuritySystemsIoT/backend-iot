@@ -7,6 +7,9 @@ services:
       - "7891:7891"
       - "7892:7892/udp"
       - "7893:7893"
+    environment:
+      - FRONTEND_URL=${FRONTEND_URL}
+      - BACKEND_API_SECRET=${BACKEND_API_SECRET}
     volumes:
       - ./images_received:/app/images_received
       - ./logs:/app/logs

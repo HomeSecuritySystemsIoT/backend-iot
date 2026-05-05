@@ -18,6 +18,9 @@ const TLS_KEY_PATH = process.env.TLS_KEY_PATH || path.join(__dirname, 'certs', '
 const TLS_CERT_PATH = process.env.TLS_CERT_PATH || path.join(__dirname, 'certs', 'server.crt');
 const TLS_CA_PATH = process.env.TLS_CA_PATH || path.join(__dirname, 'certs', 'ca.crt');
 
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const BACKEND_API_SECRET = process.env.BACKEND_API_SECRET || '';
+
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 
 // ── LOGGER ──────────────────────────────────────────────────────────────────
@@ -29,6 +32,23 @@ function ts() { return new Date().toISOString(); }
 function logTcp(msg) {
   process.stdout.write(`[TCP] ${msg}\n`);
   // tcpLog.write(`[${ts()}] ${msg}\n`);
+}
+
+// ── DEVICE REGISTRATION CHECK ────────────────────────────────────────────────
+
+async function checkDeviceRegistered(deviceId) {
+  if (!FRONTEND_URL || !BACKEND_API_SECRET) return true // skip check if not configured
+  try {
+    const url = `${FRONTEND_URL}/api/iot/devices/${encodeURIComponent(deviceId)}`;
+    const res = await fetch(url, {
+      headers: { 'X-Backend-Secret': BACKEND_API_SECRET },
+      signal: AbortSignal.timeout(5000), // 5s timeout
+    });
+    return res.ok;
+  } catch (err) {
+    logTcp(`Registration check failed for ${deviceId}: ${err.message} — allowing connection`);
+    return true; // fail open: if check fails, allow the device (don't lock out on network errors)
+  }
 }
 
 // ── STATE ────────────────────────────────────────────────────────────────────
@@ -121,13 +141,20 @@ function handleDeviceConnection(socket) {
   let writeIndex = 0;
   let expectedSize = -1;
 
-  function finalizeDevice(resolvedId) {
+  async function finalizeDevice(resolvedId) {
     if (phase !== 'identify') return;
     clearTimeout(identifyTimeout);
     phase = 'stream';
 
     if (resolvedId !== remoteIp) logTcp(`Device ${remoteIp} identified as: ${resolvedId}`);
     deviceId = resolvedId;
+
+    const isRegistered = await checkDeviceRegistered(resolvedId);
+    if (!isRegistered) {
+      logTcp(`Device ${resolvedId} is not registered — rejecting connection`);
+      socket.destroy();
+      return;
+    }
 
     tcpConnections.set(deviceId, socket);
     deviceLastSeen.set(deviceId, Date.now());
@@ -145,7 +172,7 @@ function handleDeviceConnection(socket) {
   }
 
   requestDeviceId(socket);
-  let identifyTimeout = setTimeout(() => finalizeDevice(remoteIp), IDENTIFY_TIMEOUT_MS);
+  let identifyTimeout = setTimeout(() => finalizeDevice(remoteIp).catch(err => logTcp('finalizeDevice error: ' + err.message)), IDENTIFY_TIMEOUT_MS);
 
   socket.on('data', (chunk) => {
     deviceLastSeen.set(deviceId, Date.now());
@@ -153,7 +180,7 @@ function handleDeviceConnection(socket) {
     if (phase === 'identify') {
       const nl = chunk.indexOf(0x0A);
       if (nl !== -1) {
-        finalizeDevice(parseDeviceId(chunk, nl) ?? remoteIp);
+        finalizeDevice(parseDeviceId(chunk, nl) ?? remoteIp).catch(err => logTcp('finalizeDevice error: ' + err.message));
         const remainder = chunk.subarray(nl + 1);
         if (remainder.length > 0) socket.emit('data', remainder);
       }

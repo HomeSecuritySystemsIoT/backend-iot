@@ -2,3 +2,5 @@ node_modules/
 images_received/
 logs/
 certs/*.key
+
+.env
