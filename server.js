@@ -52,6 +52,7 @@ const browserClients = new Map();  // deviceId → Map<WebSocket, fps>
 const streamIntervals = new Map();  // deviceId → interval handle
 const deviceWatchdogs = new Map();  // deviceId → watchdog interval handle
 const deviceLastSeen = new Map();  // deviceId → Date.now() of last received byte
+const deviceStopped = new Map();   // deviceId → boolean (camera deinited on device)
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -96,8 +97,16 @@ function updateDeviceMode(deviceId) {
     }, intervalMs));
 
   } else {
-    logTcp(`${deviceId} — no clients, sending keepalive 'P'`);
-    streamIntervals.set(deviceId, setInterval(() => sendCommand(deviceId, 'P'), 5 * ONE_SECOND_MS));
+    // Stop the camera on the device and keep the connection alive with P.
+    // The device ignores P while stopped; we reset deviceLastSeen manually
+    // so the watchdog does not kill an intentionally idle connection.
+    logTcp(`${deviceId} — no clients, stopping camera`);
+    sendCommand(deviceId, 'S');
+    deviceStopped.set(deviceId, true);
+    streamIntervals.set(deviceId, setInterval(() => {
+      deviceLastSeen.set(deviceId, Date.now());
+      sendCommand(deviceId, 'P');
+    }, 5 * ONE_SECOND_MS));
   }
 }
 
@@ -203,12 +212,22 @@ function handleDeviceConnection(socket) {
     }
 
     if (expectedSize !== -1 && writeIndex >= expectedSize + 4) {
-      const jpeg = Buffer.from(stagingBuffer.subarray(4, 4 + expectedSize));
+      const payload = Buffer.from(stagingBuffer.subarray(4, 4 + expectedSize));
+      const text = payload.toString('utf8');
 
-      broadcastFrame(deviceId, jpeg);
-      motion.onFrame(deviceId, jpeg)
-        .then(changed => { if (changed) logTcp(`Motion on ${deviceId}: ${(changed * 100).toFixed(1)}%`); })
-        .catch(err => logTcp(`Motion check error for ${deviceId}: ${err.message}`));
+      if (text.startsWith('camera_stopped')) {
+        logTcp(`${deviceId} — camera deactivated`);
+        deviceStopped.set(deviceId, true);
+      } else if (text.startsWith('camera_started')) {
+        logTcp(`${deviceId} — camera activated`);
+        deviceStopped.set(deviceId, false);
+      } else {
+        const jpeg = payload;
+        broadcastFrame(deviceId, jpeg);
+        motion.onFrame(deviceId, jpeg)
+          .then(changed => { if (changed) logTcp(`Motion on ${deviceId}: ${(changed * 100).toFixed(1)}%`); })
+          .catch(err => logTcp(`Motion check error for ${deviceId}: ${err.message}`));
+      }
 
       const leftover = writeIndex - (4 + expectedSize);
       if (leftover > 0) {
@@ -229,6 +248,7 @@ function handleDeviceConnection(socket) {
     if (tcpConnections.get(deviceId) === socket) {
       logTcp(`Disconnected: ${deviceId}`);
       tcpConnections.delete(deviceId);
+      deviceStopped.delete(deviceId);
       motion.onDeviceDisconnect(deviceId);
       clearInterval(streamIntervals.get(deviceId));
       streamIntervals.delete(deviceId);
