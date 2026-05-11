@@ -9,7 +9,6 @@ const motion = require('./motion-detection');
 const TCP_PORT = 7891;
 const TCP_TLS_PORT = 7893;
 const WS_PORT = 7890;
-const LOGS_DIR = path.join(__dirname, 'logs');
 const ONE_SECOND_MS = 1000;
 const IDENTIFY_TIMEOUT_MS = 2 * ONE_SECOND_MS;
 const DEVICE_TIMEOUT_MS = 15 * ONE_SECOND_MS; // destroy socket after 15 s with no data from device
@@ -21,17 +20,12 @@ const TLS_CA_PATH = process.env.TLS_CA_PATH || path.join(__dirname, 'certs', 'ca
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const BACKEND_API_SECRET = process.env.BACKEND_API_SECRET || '';
 
-fs.mkdirSync(LOGS_DIR, { recursive: true });
-
 // ── LOGGER ──────────────────────────────────────────────────────────────────
-
-const tcpLog = fs.createWriteStream(path.join(LOGS_DIR, 'tcp.log'), { flags: 'a' });
 
 function ts() { return new Date().toISOString(); }
 
 function logTcp(msg) {
   process.stdout.write(`[TCP] ${msg}\n`);
-  // tcpLog.write(`[${ts()}] ${msg}\n`);
 }
 
 // ── DEVICE REGISTRATION CHECK ────────────────────────────────────────────────
@@ -54,7 +48,7 @@ async function checkDeviceRegistered(deviceId) {
 // ── STATE ────────────────────────────────────────────────────────────────────
 
 const tcpConnections = new Map();  // deviceId → TCP socket
-const browserClients = new Map();  // deviceId → Set<WebSocket>  (video feed)
+const browserClients = new Map();  // deviceId → Map<WebSocket, fps>
 const streamIntervals = new Map();  // deviceId → interval handle
 const deviceWatchdogs = new Map();  // deviceId → watchdog interval handle
 const deviceLastSeen = new Map();  // deviceId → Date.now() of last received byte
@@ -76,6 +70,12 @@ function videoWatcherCount(deviceId) {
   return browserClients.get(deviceId)?.size ?? 0;
 }
 
+function deviceMaxFps(deviceId) {
+  const clients = browserClients.get(deviceId);
+  if (!clients?.size) return 1;
+  return Math.max(...clients.values());
+}
+
 // Switches between G-stream (any subscriber present) and P-keepalive (none).
 // Both video watchers and motion SSE subscribers trigger streaming.
 function updateDeviceMode(deviceId) {
@@ -86,13 +86,14 @@ function updateDeviceMode(deviceId) {
   clearInterval(streamIntervals.get(deviceId));
 
   if (videoWatcherCount(deviceId) + motion.watcherCount(deviceId) > 0) {
-    logTcp(`${deviceId} — client(s) active, streaming at 1 fps`);
+    const fps = deviceMaxFps(deviceId);
+    const intervalMs = Math.round(ONE_SECOND_MS / fps);
+    logTcp(`${deviceId} — client(s) active, streaming at ${fps} fps`);
 
-    // 1 fps
     streamIntervals.set(deviceId, setInterval(() => {
       logTcp(`${deviceId} — sending G`);
       sendCommand(deviceId, 'G');
-    }, ONE_SECOND_MS));
+    }, intervalMs));
 
   } else {
     logTcp(`${deviceId} — no clients, sending keepalive 'P'`);
@@ -104,7 +105,7 @@ function broadcastFrame(deviceId, jpeg) {
   const clients = browserClients.get(deviceId);
   logTcp(`broadcastFrame(${deviceId}) — ${jpeg.length} bytes — ${clients?.size ?? 0} ws client(s)`);
   if (!clients?.size) return;
-  for (const ws of clients) {
+  for (const ws of clients.keys()) {
     if (ws.readyState === 1) ws.send(jpeg);
   }
 }
@@ -308,9 +309,12 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  if (!browserClients.has(deviceId)) browserClients.set(deviceId, new Set());
-  browserClients.get(deviceId).add(ws);
-  logTcp(`WS client connected for ${deviceId} (${browserClients.get(deviceId).size} watching)`);
+  const rawFps = parseInt(url.searchParams.get('fps') ?? '1', 10);
+  const fps = Number.isFinite(rawFps) ? Math.min(Math.max(rawFps, 1), 30) : 1;
+
+  if (!browserClients.has(deviceId)) browserClients.set(deviceId, new Map());
+  browserClients.get(deviceId).set(ws, fps);
+  logTcp(`WS client connected for ${deviceId} (${browserClients.get(deviceId).size} watching, ${fps} fps requested)`);
 
   updateDeviceMode(deviceId);
 
